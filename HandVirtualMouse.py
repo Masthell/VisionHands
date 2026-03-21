@@ -2,112 +2,90 @@ import cv2
 import numpy as np
 import HandTrackingModule as htm
 import time
+import json
+import os
 from pynput.mouse import Button, Controller
-import keyboard
-#from AppKit import NSScreen    # MacOS
-import ctypes                   # Windows
 
-wCam ,hCam = 1280, 720
-#wScr, hScr = int(NSScreen.mainScreen().frame().size.width), \          # MacOS
-#    int(NSScreen.mainScreen().frame().size.height)                     # MacOS
-user32 = ctypes.windll.user32                                           # Windows
-wScr, hScr = user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)     # Windows
-frameReduction = int(wCam * 0.16)
+class NeuroBrain:
+    """Простая самообучающаяся надстройка"""
+    def __init__(self):
+        self.log_file = "hand_experience.json"
+        self.data = self.load_data()
+        # Начальные параметры, которые будут меняться
+        self.click_threshold = self.data.get("avg_click_dist", 35)
+        self.move_count = 0
+        self.session_distances = []
 
-cap = cv2.VideoCapture(0)
-cap.set(3, wCam)
-cap.set(4, hCam) 
+    def load_data(self):
+        if os.path.exists(self.log_file):
+            with open(self.log_file, "r") as f:
+                return json.load(f)
+        return {}
 
+    def learn_click(self, dist):
+        """Обучается на расстоянии между пальцами при клике"""
+        self.session_distances.append(dist)
+        if len(self.session_distances) > 50:
+            new_avg = sum(self.session_distances) / len(self.session_distances)
+            self.click_threshold = (self.click_threshold + new_avg) / 2
+            self.save_experience()
+            self.session_distances = []
+
+    def save_experience(self):
+        with open(self.log_file, "w") as f:
+            json.dump({"avg_click_dist": self.click_threshold}, f)
+
+# Инициализация
+brain = NeuroBrain()
 mouse = Controller()
-smoothening, click_smoother = 7, 0
-pLocX, pLocY, cLocX, cLocY = 0, 0, 0, 0
-RMB_pressed, LMB_pressed = False, False
+cap = cv2.VideoCapture(0)
+detector = htm.handDetector(detectionCon=0.8, maxHands=1)
 
-pTime = 0
-cTime = 0
-
-detector = htm.handDetector(maxHands=1, detectionCon=0.5)
+p_loc_x, p_loc_y = 0, 0
+SMOOTHING = 5 
 
 while True:
-    # Find hand Landmarks
     success, img = cap.read()
-    img = detector.findHands(img)
+    if not success: break
+    img = cv2.flip(img, 1)
+    img = detector.findHands(img, draw=True)
     lmList = detector.findPosition(img, draw=False)
-    
-    # Get the tip of the index and middle fingers
+
     if len(lmList) != 0:
-        x0, y0 = lmList[4][1:]
         x1, y1 = lmList[8][1:]
         x2, y2 = lmList[12][1:]
-    
-        # Check which fingers are up
         fingers = detector.fingersUp()
-        cv2.rectangle(img, (frameReduction, frameReduction), 
-                     ((wCam - frameReduction), (hCam - frameReduction)), 
-                     (255, 0, 255), 2)
-        
-        # Only Index Finger: Moving Mode
-        if fingers[1] == 1 and fingers[2] == 0 and fingers[3] == 0:
-        
-            # Convert Coordinates
-            x3 = np.interp(x1, (frameReduction, (wCam - frameReduction)), (0, wScr))
-            y3 = np.interp(y1, (frameReduction, (hCam - frameReduction)), (0, hScr))
-        
-            # Smoothen Values
-            cLocX = pLocX + (x3 - pLocX) / smoothening
-            cLocY = pLocY + (y3 - pLocY) / smoothening 
-            
-            # Move Mouse
-            mouse.position = ((wScr - cLocX), cLocY)
-            cv2.circle(img, (x1, y1), 15, (255, 0, 255), cv2.FILLED)
-            pLocX, pLocY = cLocX, cLocY
-            
-            # Smoothen Clicks
-            if click_smoother >= 30:
-                RMB_pressed, LMB_pressed = False, False
-            click_smoother += 1
-        
-        # Both Index and Middle fingers are up: Clicking Mode
-        if fingers[1] == 1 and fingers[2] == 1:
-            # Find distance between Index and Middle fingers
-            lenghtIM, img, lineInfoIM = detector.findDistance(8, 12, img)
-            # Find distance between Middle and Ring fingers
-            lenghtMR, img, lineInfoMR = detector.findDistance(12, 16, img)
 
-            # Click RMB if distance between Index and Middle and Ring fingers short
-            if RMB_pressed == False and fingers[3] == 1 and lenghtMR < 65 and lenghtIM < 65:
-                cv2.circle(img, (lineInfoIM[4], lineInfoIM[5]),
-                           15, (0, 255, 255), cv2.FILLED)
-                cv2.circle(img, (lineInfoMR[4], lineInfoMR[5]),
-                           15, (0, 255, 255), cv2.FILLED)
-                mouse.click(Button.right, 1)
-                RMB_pressed, LMB_pressed = True, False
-            # Click LMB if distance between Index and Middle fingers short
-            elif LMB_pressed == False and lenghtIM < 65:
-                cv2.circle(img, (lineInfoIM[4], lineInfoIM[5]),
-                           15, (0, 255, 0), cv2.FILLED)
+        # ДВИЖЕНИЕ
+        if fingers[1] == 1 and fingers[2] == 0:
+            # Используем динамическую рамку (можно тоже обучать)
+            x3 = np.interp(x1, (100, 540), (0, 1920))
+            y3 = np.interp(y1, (100, 380), (0, 1080))
+            
+            curr_x = p_loc_x + (x3 - p_loc_x) / SMOOTHING
+            curr_y = p_loc_y + (y3 - p_loc_y) / SMOOTHING
+            mouse.position = (int(curr_x), int(curr_y))
+            p_loc_x, p_loc_y = curr_x, curr_y
+
+        # КЛИК С ОБУЧЕНИЕМ
+        if fingers[1] == 1 and fingers[2] == 1:
+            dist = np.hypot(x2 - x1, y2 - y1)
+            
+            # Система использует порог, который она выучила сама!
+            if dist < brain.click_threshold + 5: 
                 mouse.click(Button.left, 1)
-                RMB_pressed, LMB_pressed = False, True
-            click_smoother = 0
-        
-        # Scroll up/down if all fingers are closed
-        if fingers[1] == 0 and fingers[2] == 0 and fingers[3] == 0:
-            cv2.circle(img, (x0, y0), 15, (255, 0, 0), cv2.FILLED)
-            if fingers[0] == 0:
-                mouse.scroll(0, 2)
-            else:
-                mouse.scroll(0, -2)
-    
-    # Frame Rate
-    cTime = time.time()
-    fps = 1/(cTime-pTime)
-    pTime = cTime
-    cv2.putText(img, str(int(fps)), (10, 70), cv2.FONT_HERSHEY_COMPLEX, 3, 
-                (255, 0, 255), 3)
-    
-    # Display
-    cv2.imshow("Hand Virtual Mouse", img)
-    cv2.waitKey(1)
-    
-    if keyboard.is_pressed('space'):
-        break
+                brain.learn_click(dist) # "Запоминаем", на каком расстоянии был клик
+                
+                cv2.putText(img, f"Smart Click: {int(dist)}px", (x1, y1-20), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                time.sleep(0.15)
+
+    # Вывод текущего "интеллекта" системы
+    cv2.putText(img, f"AI Threshold: {int(brain.click_threshold)}", (10, 30), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
+
+    cv2.imshow("AI Hand Mouse", img)
+    if cv2.waitKey(1) & 0xFF == ord('q'): break
+
+cap.release()
+cv2.destroyAllWindows()
