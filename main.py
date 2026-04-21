@@ -1,19 +1,31 @@
-"""
-Gesture Controller
-==================
-Точка входа приложения.
+import sys
+import os
 
-Функционал:
-  - Управление компьютером жестами (курсор, клик, скролл)
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+os.environ['GLOG_minloglevel'] = '2'
 
-Управление:
-  G — вкл/выкл управление жестами
-  Q / ESC — выход
-"""
+from PySide6.QtWidgets import QApplication
+from core.processor import VisionProcessor
+from ui.dashboard import Dashboard
 
-from app import App
+def main():
+    app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
 
+    model_path = 'models/hand_landmarker.task'
+    if not os.path.exists(model_path):
+        return
+
+    try:
+        processor = VisionProcessor()
+        window = Dashboard(processor)
+        window.show()
+        sys.exit(app.exec())
+    except Exception as e:
+        print(f"[CRITICAL ERROR] {e}")
+    finally:
+        if 'processor' in locals():
+            processor.stop()
 
 if __name__ == "__main__":
-    application = App()
-    application.run()
+    main()

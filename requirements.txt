@@ -1,4 +1,6 @@
+mediapipe
 opencv-python
-mediapipe==0.10.32
-numpy
+PySide6
 pyautogui
+pygetwindow
+numpy
